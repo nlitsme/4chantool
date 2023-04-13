@@ -14,8 +14,36 @@ import http.client
 from collections import defaultdict
 g_stats = defaultdict(int)
 
+def optq(x):
+    """ optionally quote a string """
+    return repr(x) if type(x) == str and x.find(' ')>=0 else x
+
+def htmlstrip(html):
+    """ strip html from 4chan's messages """
+    if not html: return html
+    html = html.replace('<br>', "\n")
+    # wbr, s, a, span
+    html = re.sub('<\w+>', '', html)
+    html = re.sub('</\w+>', '', html)
+    # quote, mu-r, mu-b, mu-s
+    html = re.sub(r'<span class="[^"]+">', '', html)
+    # quotelink
+    html = re.sub(r'<a[^<>]+>', '', html)
+
+    html = html.replace("&gt;", ">")
+    html = html.replace("&lt;", "<")
+    html = html.replace("&quot;", "\"")
+    html = html.replace("&#39;", "\'")
+    html = html.replace("&#039;", "\'")
+    html = html.replace("&amp;", "&")
+
+    return html
+
 class FileCache:
     """
+    create backup of 4chan messages on disk.
+
+
     TODO: for the catalog, threads and archive files,
     add a 'once a day' new path, with date in the filename.
     """
@@ -38,6 +66,19 @@ class FileCache:
             path = path.replace(".json", "-%s.json" % now)
         return os.path.join(self.basepath, path)
 
+def addCookie(cj, name, value, domain):
+    """
+    helper to add a cookie to the http-cookie-jar
+    """
+    cj.set_cookie(http.cookiejar.Cookie(
+            version=0, name=name, value=value,
+            port=None, port_specified=False,
+            domain=domain, domain_specified=True, domain_initial_dot=True,
+            path="/", path_specified=True,
+            secure=False, expires=None, discard=False,
+            comment=None, comment_url=None, rest={}))
+
+
 class FourChan:
     """
 "https://a.4cdn.org/boards.json"
@@ -54,7 +95,9 @@ class FourChan:
         self.args = args
         self.cache = FileCache(self.args.cachedir)
         cj = http.cookiejar.CookieJar()
-        cj.set_cookie(http.cookiejar.Cookie(version=0, name='4chan_disclaimer', value='1', port='80', port_specified='80', domain='4chan.com', domain_specified=None, domain_initial_dot=None, path='/', path_specified=None, secure=False, expires=False, discard='', comment=None, comment_url=None, rest=None))
+        addCookie(cj, '4chan_disclaimer', '1', '4chan.com')
+        addCookie(cj, 'cf_clearance', args.cfclearance, 'find.4chan.org')
+
         handlers = [urllib.request.HTTPCookieProcessor(cj)]
         if args.debug:
             handlers.append(urllib.request.HTTPSHandler(debuglevel=1))
@@ -64,7 +107,10 @@ class FourChan:
         """
         Does GET or POST request to youtube.
         """
-        req = urllib.request.Request(url)
+        hdrs = {
+            "User-Agent": self.args.cfuseragent,
+        }
+        req = urllib.request.Request(url, headers=hdrs)
 
         kwargs = dict(timeout=30)
         if data:
@@ -140,17 +186,18 @@ class FourChan:
 
 
     def print_post(self, p, indent=""):
-        print("%sFrom: %s" % (indent, p.get("name", "??")))
+        print("--")
+        print("%sFrom: %s" % (indent, htmlstrip(p.get("name", "??"))))
         print("%sDate: %s" % (indent, datetime.datetime.fromtimestamp(p["time"])))
         sub = p.get("sub")
         if sub:
-            print("%sSubject: %s" % (indent, sub,))
+            print("%sSubject: %s" % (indent, htmlstrip(sub),))
         filename = p.get("filename")
         if filename:
             wh = ""
             if p.get("w"):
                 wh = "  %dx%d" % (p["w"], p["h"])
-            print("%sFilename: (%d%s) <%s> %s%s" % (indent, p.get("fsize", 0), wh, p.get("tim"), filename, p.get("ext", "")))
+            print("%sFilename: (%d%s) <%s> %s" % (indent, p.get("fsize", 0), wh, p.get("tim"), optq(htmlstrip(filename)+p.get("ext", ""))))
 
         info = []
         infoitems = [
@@ -164,15 +211,24 @@ class FourChan:
             ("resto", "resto"),
             ("tag", "tag"),
         ]
+        known = [
+            "name", "time", "sub", "fsize", "tim", "ext", "filename", "w", "h", "com",
+            "last_replies", "unique_ips", "omitted_images", "omitted_posts", "bumplimit",
+            "imagelimit", "images", "replies", "resto", "tag"
+        ]
         for k, v in infoitems:
             x = p.get(k)
             if x is not None:
                 info.append("%s=%s" % (v, x))
+        for k, v in p.items():
+            if k not in known:
+                info.append("%s=%s" % (k, optq(v)))
 
-        print("Info: %s" % (", ".join(info)))
+        if info:
+            print("Info: %s" % (", ".join(info)))
 
         print()
-        com = p.get("com")
+        com = htmlstrip(p.get("com"))
         if com:
             if indent:
                 com = indent + com.replace("\n", "\n" + indent)
@@ -232,6 +288,57 @@ class FourChan:
         for tid in js:
             self.list_thread(board, tid)
 
+    def find(self, keywords, args):
+        q = { 'q':keywords }
+        if args.board:
+            q['b'] = args.board
+        o = 0
+        while o<=100:
+            jsontext = self.httpreq("https://find.4chan.org/api?" + urllib.parse.urlencode(q))
+            js = json.loads(jsontext)
+            if extra := ", ".join(f"{k}={optq(v)}" for k, v in js.items() if k not in ('threads',)):
+                print("---- query:", extra)
+
+            for t in js.get('threads'):
+                yield t
+
+            o += 10
+            q['o'] = o
+
+    def print_thread(self, thd):
+        print(f"-- /{thd.get('board')}/ -- {thd.get('thread')}")
+        if extra := ", ".join(f"{k}={optq(v)}" for k, v in thd.items() if k not in ('board', 'thread', 'posts')):
+            print("--", extra)
+        for post in thd.get('posts'):
+            self.print_post(post)
+
+
+def loadconfig(cfgfile):
+    """
+    Load config from .4chanrc
+    """
+    with open(cfgfile, 'r') as fh:
+        txt = fh.read()
+    txt = "[root]\n" + txt
+    import configparser
+    config = configparser.ConfigParser()
+    config.read_string(txt)
+
+    return config
+
+
+def applyconfig(cfg, args):
+    """
+    Apply the configuration read from .4chanrc to the `args` dictionary,
+    which is used to configure everything.
+    """
+    def add(argname, cfgname):
+        if not getattr(args, argname) and cfg.has_option('cloudfare', cfgname):
+            setattr(args, argname, cfg.get('cloudfare', cfgname))
+    add("cfuseragent", "useragent")
+    add("cfclearance", "clearance")
+
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='List 4chan comments')
@@ -245,7 +352,24 @@ def main():
     parser.add_argument('--catalog', action='store_true', help='list threads from catalog for board')
     parser.add_argument('--archive', action='store_true', help='list threads from archive for board')
     parser.add_argument('--stats', action='store_true', help='show post keyword stats')
+    parser.add_argument('--search', type=str, help='forum search')
+    parser.add_argument('--config', help='specify configuration file.', default='~/.4chanrc')
+    parser.add_argument('--cfuseragent', type=str)
+    parser.add_argument('--cfclearance', type=str)
     args = parser.parse_args()
+
+    if args.config.startswith("~/"):
+        import os
+        homedir = os.environ['HOME']
+        args.config = args.config.replace("~", homedir)
+
+    try:
+        cfg = loadconfig(args.config)
+
+        applyconfig(cfg, args)
+    except Exception as e:
+        print("Error in config: %s" % e)
+
 
     fc = FourChan(args)
     if args.boards:
@@ -275,6 +399,11 @@ def main():
         print("== stats")
         for k, v in g_stats.items():
             print("%6d - %s" % (v, k))
+
+    if args.search:
+        print("== search", args.search)
+        for thd in fc.find(args.search, args):
+            fc.print_thread(thd)
 
 if __name__ == '__main__':
     main()
