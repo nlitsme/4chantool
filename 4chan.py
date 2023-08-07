@@ -96,7 +96,7 @@ class FourChan:
         self.cache = FileCache(self.args.cachedir)
         cj = http.cookiejar.CookieJar()
         addCookie(cj, '4chan_disclaimer', '1', '4chan.com')
-        addCookie(cj, 'cf_clearance', args.cfclearance, 'find.4chan.org')
+        addCookie(cj, 'cf_clearance', args.cfclearance, 'find.4channel.org')
 
         handlers = [urllib.request.HTTPCookieProcessor(cj)]
         if args.debug:
@@ -294,7 +294,7 @@ class FourChan:
             q['b'] = args.board
         o = 0
         while o<=100:
-            jsontext = self.httpreq("https://find.4chan.org/api?" + urllib.parse.urlencode(q))
+            jsontext = self.httpreq("https://find.4channel.org/api?" + urllib.parse.urlencode(q))
             js = json.loads(jsontext)
             if extra := ", ".join(f"{k}={optq(v)}" for k, v in js.items() if k not in ('threads',)):
                 print("---- query:", extra)
@@ -342,7 +342,7 @@ def applyconfig(cfg, args):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='List 4chan comments')
-    parser.add_argument('--debug', '-d', action='store_true', help='print all intermediate steps')
+    parser.add_argument('--debug', '-d', action='store_true', help=argparse.SUPPRESS) # 'print all intermediate steps'
     parser.add_argument('--verbose', '-v', action='store_true')
     parser.add_argument('--boards', '-l', action='store_true', help='list boards')
     parser.add_argument('--board', '-b', type=str, help='specify board')
@@ -353,9 +353,9 @@ def main():
     parser.add_argument('--archive', action='store_true', help='list threads from archive for board')
     parser.add_argument('--stats', action='store_true', help='show post keyword stats')
     parser.add_argument('--search', type=str, help='forum search')
-    parser.add_argument('--config', help='specify configuration file.', default='~/.4chanrc')
-    parser.add_argument('--cfuseragent', type=str)
-    parser.add_argument('--cfclearance', type=str)
+    parser.add_argument('--config', default='~/.4chanrc', help=argparse.SUPPRESS)
+    parser.add_argument('--cfuseragent', type=str, help=argparse.SUPPRESS)
+    parser.add_argument('--cfclearance', type=str, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if args.config.startswith("~/"):
